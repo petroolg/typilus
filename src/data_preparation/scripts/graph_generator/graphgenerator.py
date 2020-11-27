@@ -1,7 +1,7 @@
 import keyword
 import logging
 import re
-from collections import defaultdict
+from collections import defaultdict, Counter
 from symtable import symtable, Symbol
 from typing import Any, Dict, Optional, Set, Union, List, FrozenSet
 
@@ -17,10 +17,10 @@ from typed_ast.ast3 import NodeVisitor, parse, AST, FunctionDef, AsyncFunctionDe
     Str, YieldFrom, Starred, Delete, Break, Continue, If, For, AsyncFor, While, Try, Assert, With, AsyncWith, Raise, \
     IfExp, Call
 
-from dataflowpass import DataflowPass
-from graphgenutils import EdgeType, TokenNode, StrSymbol, SymbolInformation
-from type_lattice_generator import TypeLatticeGenerator
-from typeparsing import parse_type_annotation_node, parse_type_comment, TypeAnnotationNode
+from .dataflowpass import DataflowPass
+from .graphgenutils import EdgeType, TokenNode, StrSymbol, SymbolInformation
+from .type_lattice_generator import TypeLatticeGenerator
+from .typeparsing import parse_type_annotation_node, parse_type_comment, TypeAnnotationNode
 
 
 class AstGraphGenerator(NodeVisitor):
@@ -35,6 +35,7 @@ class AstGraphGenerator(NodeVisitor):
 
         self.__ast = parse(source)
         self.__scope_symtable = [ symtable(source, 'file.py', 'exec') ]
+        self.__symtable_usage_count = Counter()
 
         self.__imported_symbols = {}  # type: Dict[TypeAnnotationNode, TypeAnnotationNode]
 
@@ -273,6 +274,9 @@ class AstGraphGenerator(NodeVisitor):
             self.__type_graph.add_type(type_annotation, self.__imported_symbols)
 
     def __get_symbol_for_name(self, name, lineno, col_offset):
+        """
+        Aside from strings and Attribute nodes, name can be Subscript. Skip annotation in this case.
+        """
         if isinstance(name, str):
             node = TokenNode(name, lineno, col_offset)
             self.add_terminal(node)
@@ -290,9 +294,8 @@ class AstGraphGenerator(NodeVisitor):
             else:
                 logging.warning(f'Symbol "{name}"@{lineno}:{col_offset} Not Found!')
                 symbol = None
-        else:
+        elif isinstance(name, Attribute):
             node = name
-            assert isinstance(node, Attribute)
             # Heuristic: create symbols only for attributes of the form X.Y and X.Y.Z
             self.visit(node.value)
             self.add_terminal(TokenNode('.', node.lineno, node.col_offset))
@@ -305,6 +308,11 @@ class AstGraphGenerator(NodeVisitor):
                 symbol = StrSymbol(name)
             else:
                 symbol = None
+        else:
+            node = name
+            symbol = None
+            self.visit(node)
+
         if isinstance(symbol, StrSymbol):
             symbol_type = 'variable'
         elif isinstance(symbol, Symbol):
@@ -324,13 +332,46 @@ class AstGraphGenerator(NodeVisitor):
         self.__visit_variable_like(node.id, node.lineno, node.col_offset, can_annotate_here=None)
 
     def __enter_child_symbol_table(self, symtable_type: str, name: str, lineno: Optional[int]=None):
+        """
+        When there are function decorators, the lineno in symtable points to the line with `def`, while passed lineno
+        refers to the very first decorator. To resolve it, when there are available symbols with mismatched lineno,
+        we pick the nearest successor.
+
+        For the comprehension-like objects, the error can be the opposite and we should pick the predecessor.
+
+        When there are several alike elements at the same level (e.g., multiple lambdas) it's hard to choose between
+        them and we need some tweaks: we pick the one which was used less times, among them -- the first one.
+        """
+        occurrences = []
         for child_symtable in self.__scope_symtable[-1].get_children():
-            if child_symtable.get_type() == symtable_type and child_symtable.get_name() == name and (lineno is None or child_symtable.get_lineno() == lineno):
-                self.__scope_symtable.append(child_symtable)
-                break
-        else:
+            if child_symtable.get_type() == symtable_type and child_symtable.get_name() == name:
+                occurrences.append(child_symtable)
+
+        if len(occurrences) == 0:
             raise ValueError(f'Symbol Table for {name} of type {symtable_type} at {lineno} not found')
 
+        should_reverse = name in ['listcomp', 'dictcomp', 'setcomp', 'genexpr']
+        occurrences.sort(key=lambda table: table.get_lineno(), reverse=should_reverse)
+
+        closest_matching = []
+        for child_symtable in occurrences:
+            if lineno is not None and (
+                    (not should_reverse and child_symtable.get_lineno() >= lineno) or
+                    (should_reverse and child_symtable.get_lineno() <= lineno)
+            ):
+                # Pick all the closest symtables in the right direction
+                if len(closest_matching) == 0 or closest_matching[0].get_lineno() == child_symtable.get_lineno():
+                    closest_matching.append(child_symtable)
+
+        if len(closest_matching) == 0:
+            self.__scope_symtable.append(occurrences[-1])
+            self.__symtable_usage_count[occurrences[-1].get_id()] += 1
+        else:
+            # If there are multiple matching symtables (e.g., [lambda x: x, lambda: lambda x: x]), select the one that
+            # was used less times, since the order is right.
+            selected_table = min(closest_matching, key=lambda table: self.__symtable_usage_count[table.get_id()])
+            self.__scope_symtable.append(selected_table)
+            self.__symtable_usage_count[selected_table.get_id()] += 1
 
     # region Function Parsing
 
@@ -546,9 +587,15 @@ class AstGraphGenerator(NodeVisitor):
 
         # TODO: Type aliases are of the form Vector=List[float] how do we parse these?
 
-        if node.type_comment is not None and len(node.targets) != 1:
-            assert False
+        # Fails for a chained assignment:
+        # a = b = c = expression # Type annotation
+        # Here the type annotation seems valid, while there are 3 assignment targets
+        # I think that the graph processing should not fail in this case, uncomment if you think the opposite
+        # if node.type_comment is not None and len(node.targets) != 1:
+        #     assert False
 
+        # When there are several targets, they represent a chained assignment, so we put `=` between them
+        # Tuple assignment (like a, b, c = [1, 2, 3]) will be represented by a single Tuple-target
         for i, target in enumerate(node.targets):
             if isinstance(target, Attribute) or isinstance(target, Name):
                 self.__visit_variable_like(target, target.lineno, target.col_offset, can_annotate_here=True,
@@ -560,7 +607,7 @@ class AstGraphGenerator(NodeVisitor):
 
             self._add_edge(target, node.value, EdgeType.COMPUTED_FROM)
             if i < len(node.targets) - 1:
-                self.add_terminal(TokenNode(','))
+                self.add_terminal(TokenNode('='))
 
         self.add_terminal(TokenNode('='))
         self.visit(node.value)
@@ -638,15 +685,11 @@ class AstGraphGenerator(NodeVisitor):
     def visit_Lambda(self, node: Lambda):
         self.add_terminal(TokenNode('lambda'))
 
-        try:
-            self.__enter_child_symbol_table('function', 'lambda', node.lineno)
-            self.visit(node.args)
-            self.add_terminal(TokenNode(':'))
-            self.visit(node.body)
-            self.__scope_symtable.pop()
-        except ValueError:
-            pass  # In the rare case of nexted lambdas symtable acts odd...
-
+        self.__enter_child_symbol_table('function', 'lambda', node.lineno)
+        self.visit(node.args)
+        self.add_terminal(TokenNode(':'))
+        self.visit(node.body)
+        self.__scope_symtable.pop()
 
     def visit_arg(self, node: arg):
         type_annotation = None

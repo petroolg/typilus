@@ -1,8 +1,9 @@
 import typing
 from enum import Enum, auto
 from typing import Optional, NamedTuple, List, Dict
+from pprint import PrettyPrinter
 
-from typeparsing import TypeAnnotationNode
+from .typeparsing import TypeAnnotationNode
 
 
 class EdgeType(Enum):
@@ -53,3 +54,15 @@ class SymbolInformation(NamedTuple):
     @classmethod
     def create(cls, name: str, symbol_type: str) -> 'SymbolInformation':
         return SymbolInformation(name, [], {}, symbol_type)
+
+
+def prettyprint_graph(g: Dict):
+    g['token-sequence'] = [f"{ind}_{g['nodes'][ind]}" for ind in g['token-sequence']]
+    g['edges'] = {
+        edge_type: {
+            f"{v}_{g['nodes'][v]}": [f"{u}_{g['nodes'][u]}" for u in us]
+            for v, us in g['edges'][edge_type].items()
+        }
+        for edge_type in g['edges']
+    }
+    PrettyPrinter().pprint(g)
