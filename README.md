@@ -20,6 +20,7 @@ Currently, there are no CFG edges.
 
 ### Graph extraction
 * Go to `src/data_preparation/scripts`
+* Install dependencies with `pip install -r requirements.txt`
 * Run `python -m graph_generator.run -i {input_dir} -o {output_dir}`
 * You can select output format with `-f {format}`. Currently, `dot` and `jsonl_gz` are supported
 
