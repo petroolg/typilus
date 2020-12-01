@@ -14,16 +14,21 @@ def get_files(root: str):
     return [fname for fname in iglob(os.path.join(root, '**/*.py'), recursive=True) if not os.path.isdir(fname)]
 
 
+def generate_graph_for_code(code: str, lattice: TypeLatticeGenerator):
+    generator = AstGraphGenerator(code, lattice)
+    graph = generator.build()
+    return generator, graph
+
+
 def generate_graphs_for_files(
         fnames: List[str], skipped_files: List[str], errored_files: List[Tuple[str, Exception]],
         lattice: TypeLatticeGenerator
 ) -> Iterable[Tuple[AstGraphGenerator, Dict, str]]:
     for fname in fnames:
         try:
-            with open(fname) as f:
-                generator = AstGraphGenerator(f.read(), lattice)
-                graph = generator.build()
-                yield generator, graph, fname
+            code = open(fname).read()
+            generator, graph = generate_graph_for_code(code, lattice)
+            yield generator, graph, fname
         except (SyntaxError, UnicodeDecodeError):
             skipped_files.append(fname)
         except Exception as e:
