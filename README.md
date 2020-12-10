@@ -23,6 +23,7 @@ Currently, there are no CFG edges.
 * Install dependencies with `pip install -r requirements.txt`
 * Run `python -m graph_generator.run -i {input_dir} -o {output_dir}`
 * You can select output format with `-f {format}`. Currently, `dot` and `jsonl_gz` are supported
+* To explore graphs you can use `prettyprint_graph` in `src/data_preparation/scripts/graph_generator/graphgenutils.py`
 
 ## [Original Typilus](https://github.com/typilus/typilus)
 
