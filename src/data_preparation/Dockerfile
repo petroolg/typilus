@@ -25,3 +25,5 @@ WORKDIR /usr/src/datasetbuilder
 COPY ./metadata ./metadata
 COPY ./scripts ./scripts
 COPY ./*.spec ./
+COPY ./job.py ./job.py
+COPY ./__init__.py ./__init__.py
