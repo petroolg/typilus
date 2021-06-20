@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 
-from graph_generator.typeparsing.nodes import TypeAnnotationNode
+from ..nodes import TypeAnnotationNode
 
 
 class RewriteRule(ABC):

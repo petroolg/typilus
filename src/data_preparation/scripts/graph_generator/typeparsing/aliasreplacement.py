@@ -1,8 +1,8 @@
 from typing import Dict, Tuple
 
-from graph_generator.typeparsing.nodes import TypeAnnotationNode, SubscriptAnnotationNode, TupleAnnotationNode, \
+from .nodes import TypeAnnotationNode, SubscriptAnnotationNode, TupleAnnotationNode, \
     ListAnnotationNode, AttributeAnnotationNode, IndexAnnotationNode, ElipsisAnnotationNode
-from graph_generator.typeparsing.visitor import TypeAnnotationVisitor
+from .visitor import TypeAnnotationVisitor
 
 __all__ = ['AliasReplacementVisitor']
 
