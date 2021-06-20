@@ -34,7 +34,7 @@ class AstGraphGenerator(NodeVisitor):
         self.__edges: Dict[EdgeType, Dict[int, Set[int]]] = {e: defaultdict(set) for e in EdgeType}
 
         self.__ast = parse(source)
-        self.__scope_symtable = [ symtable(source, 'file.py', 'exec') ]
+        self.__scope_symtable = [symtable(source, 'file.py', 'exec')]
         self.__symtable_usage_count = Counter()
 
         self.__imported_symbols = {}  # type: Dict[TypeAnnotationNode, TypeAnnotationNode]
@@ -54,7 +54,6 @@ class AstGraphGenerator(NodeVisitor):
 
         # Last Lexical Use
         self.__last_lexical_use: Dict[Any, Any] = {}
-
 
     # region Constants
     INDENT = '<INDENT>'
@@ -104,11 +103,26 @@ class AstGraphGenerator(NodeVisitor):
 
     IDENTIFER_REGEX = re.compile(r'[a-zA-Z_][a-zA-Z0-9_]*')
 
+    FLAKE8_MESSAGE_REGEX = {
+        "F402": re.compile("import '(.*)' from line .* shadowed by loop variable"),
+        "F823": re.compile("local variable '(.*)' .* referenced before assignment"),
+        "F841": re.compile("local variable '(.*)' is assigned to but never used"),
+        "F821": re.compile("undefined name '(.*)'"),
+        "F811": re.compile("redefinition of unused '(.*)' from line"),
+        "F812": re.compile("list comprehension redefines '(.*)' from line"),
+        "F822": re.compile("undefined name '(.*)' in __all__")
+    }
+
     BUILT_IN_METHODS_TO_KEEP = frozenset({"__getitem__", "__setitem__", "__enter__", "__call__"})
 
     # endregion
 
-    def build(self):
+    def parse_variable_name(self, flake_code, message):
+        pattern = self.FLAKE8_MESSAGE_REGEX.get(flake_code)
+        if pattern:
+            return pattern.match(message).group(1)
+
+    def build(self, flake8_json):
         self.visit(self.__ast)
         self.__add_subtoken_of_edges()
 
@@ -135,20 +149,38 @@ class AstGraphGenerator(NodeVisitor):
         def is_annotation_worthy(sinfo: SymbolInformation) -> bool:
             if sinfo.name == 'self':
                 return False  # "self" by convention is not annotated
-            elif sinfo.name.startswith('__') and sinfo.name.endswith('__') and sinfo.name not in self.BUILT_IN_METHODS_TO_KEEP:
+            elif sinfo.name.startswith('__') and sinfo.name.endswith(
+                    '__') and sinfo.name not in self.BUILT_IN_METHODS_TO_KEEP:
                 return False  # Build in methods have fixed conventions
             elif any(v == 'None' for k, v in sinfo.annotatable_locations.items()):
                 return False  # 'None' is deterministically computable
             return True
 
+        ######################
+        # Adding Flake8 info.#
+        ######################
+
+        for code_dict in flake8_json:
+            var_name = self.parse_variable_name(code_dict["code"], code_dict["text"])
+            graph_symbol = None
+            for key, info in self.__variable_like_symbols.items():
+                if info.name == var_name and info.symbol_type == "variable":
+                    graph_symbol = key
+            if graph_symbol:
+                print(self.__node_to_id[graph_symbol])
+                print(self.__id_to_node[self.__node_to_id[graph_symbol]])
+                self.__id_to_node[self.__node_to_id[graph_symbol]].target = code_dict["code"]
+                print(self.__id_to_node[self.__node_to_id[graph_symbol]].target)
 
         return {
             'nodes': [self.node_to_label(n) for n in self.__id_to_node],
-            'edges': {e.name: {f: list(t) for f, t in v.items() if len(t) > 0} for e, v in self.__edges.items() if len(v) > 0},
+            'edges': {e.name: {f: list(t) for f, t in v.items() if len(t) > 0} for e, v in self.__edges.items() if
+                      len(v) > 0},
             'token-sequence': [self.__node_to_id[t] for t in self.__backbone_sequence],
             'supernodes': {self.__node_to_id[node]: parse_symbol_info(symbol_info)
                            for node, symbol_info in self.__variable_like_symbols.items()
-                           if len(symbol_info.annotatable_locations) > 0 and is_annotation_worthy(symbol_info)}
+                           if len(symbol_info.annotatable_locations) > 0 and is_annotation_worthy(symbol_info)},
+            "labels": [self.node_to_target(n) for n in self.__id_to_node]
         }
 
     def __add_subtoken_of_edges(self):
@@ -189,7 +221,8 @@ class AstGraphGenerator(NodeVisitor):
     def _get_node(self, node_id: int):
         return self.__id_to_node[node_id]
 
-    def _add_edge(self, from_node: Union[AST, TokenNode], to_node: Union[AST, TokenNode], edge_type: EdgeType) -> None:
+    def _add_edge(self, from_node: Union[AST, TokenNode], to_node: Union[AST, TokenNode],
+                  edge_type: EdgeType) -> None:
         from_node_idx = self.__node_id(from_node)
         to_node_idx = self.__node_id(to_node)
         self.__edges[edge_type][from_node_idx].add(to_node_idx)
@@ -201,7 +234,8 @@ class AstGraphGenerator(NodeVisitor):
     def visit(self, node: AST):
         """Visit a node adding the Child edge."""
         if self.__current_parent_node is not None:
-            assert self.__current_parent_node in self.__node_to_id or isinstance(self.__current_parent_node, Module), self.__current_parent_node
+            assert self.__current_parent_node in self.__node_to_id or isinstance(self.__current_parent_node,
+                Module), self.__current_parent_node
             self._add_edge(self.__current_parent_node, node, EdgeType.CHILD)
         parent = self.__current_parent_node
         self.__current_parent_node = node
@@ -209,7 +243,7 @@ class AstGraphGenerator(NodeVisitor):
             method = 'visit_' + node.__class__.__name__
             visitor = getattr(self, method, self.generic_visit)
             if visitor == self.generic_visit:
-                logging.warning('Unvisited AST type: %s',  node.__class__.__name__)
+                logging.warning('Unvisited AST type: %s', node.__class__.__name__)
             return visitor(node)
         finally:
             self.__current_parent_node = parent
@@ -222,7 +256,7 @@ class AstGraphGenerator(NodeVisitor):
         self.__prev_token_node = token_node
 
     def __visit_statement_block(self, stmts: List):
-        self.add_terminal(TokenNode(self.INDENT)) # Skip ":" since it is implied
+        self.add_terminal(TokenNode(self.INDENT))  # Skip ":" since it is implied
         for i, statement in enumerate(stmts):
             self.visit(statement)
             if i < len(stmts) - 1:
@@ -233,13 +267,13 @@ class AstGraphGenerator(NodeVisitor):
         self.add_terminal(TokenNode(self.DEDENT))
 
     def visit_Name_annotatable(self, node: Name, lineno: int, col_offset: int,
-                              can_annotate_here: Optional[bool], type_annotation: TypeAnnotationNode = None):
+                               can_annotate_here: Optional[bool], type_annotation: TypeAnnotationNode = None):
         self._add_edge(self.__current_parent_node, node, EdgeType.CHILD)
         parent = self.__current_parent_node
         self.__current_parent_node = node
         try:
             return self.__visit_variable_like(node.id, node.lineno, node.col_offset,
-                                              can_annotate_here=can_annotate_here, type_annotation=type_annotation)
+                can_annotate_here=can_annotate_here, type_annotation=type_annotation)
         finally:
             self.__current_parent_node = parent
 
@@ -281,7 +315,8 @@ class AstGraphGenerator(NodeVisitor):
             node = TokenNode(name, lineno, col_offset)
             self.add_terminal(node)
 
-            if self.__scope_symtable[-1].get_type() == 'class' and name.startswith('__') and not name.endswith('__'):
+            if self.__scope_symtable[-1].get_type() == 'class' and name.startswith('__') and not name.endswith(
+                    '__'):
                 name = '_' + self.__scope_symtable[-1].get_name() + name
 
             current_idx = len(self.__scope_symtable) - 1
@@ -331,7 +366,7 @@ class AstGraphGenerator(NodeVisitor):
     def visit_Name(self, node: Name):
         self.__visit_variable_like(node.id, node.lineno, node.col_offset, can_annotate_here=None)
 
-    def __enter_child_symbol_table(self, symtable_type: str, name: str, lineno: Optional[int]=None):
+    def __enter_child_symbol_table(self, symtable_type: str, name: str, lineno: Optional[int] = None):
         """
         When there are function decorators, the lineno in symtable points to the line with `def`, while passed lineno
         refers to the very first decorator. To resolve it, when there are available symbols with mismatched lineno,
@@ -377,7 +412,8 @@ class AstGraphGenerator(NodeVisitor):
 
     def visit_FunctionDef(self, node: FunctionDef) -> None:
         self.__visit_function(node, is_async=False)
-    def visit_AsyncFunctionDef(self, node: AsyncFunctionDef)-> None:
+
+    def visit_AsyncFunctionDef(self, node: AsyncFunctionDef) -> None:
         self.__visit_function(node, is_async=True)
 
     def __visit_function(self, node: Union[FunctionDef, AsyncFunctionDef], is_async: bool):
@@ -399,7 +435,8 @@ class AstGraphGenerator(NodeVisitor):
             t = parse_type_comment(t)
 
         symbol_name = node.name
-        self.__visit_variable_like(symbol_name, node.lineno, node.col_offset, can_annotate_here=True, type_annotation=t)
+        self.__visit_variable_like(symbol_name, node.lineno, node.col_offset, can_annotate_here=True,
+            type_annotation=t)
 
         old_return_scope = self.__return_scope
         self.__enter_child_symbol_table('function', node.name, node.lineno)
@@ -438,6 +475,7 @@ class AstGraphGenerator(NodeVisitor):
 
     def visit_For(self, node: For):
         self.__visit_for(node, False)
+
     def visit_AsyncFor(self, node: AsyncFor):
         self.__visit_for(node, True)
 
@@ -483,7 +521,6 @@ class AstGraphGenerator(NodeVisitor):
                 self.add_terminal(TokenNode('from'))
                 self.visit(node.cause)
 
-
     def visit_Return(self, node: Return):
         self._add_edge(node, self.__return_scope, EdgeType.RETURNS_TO)
         self.add_terminal(TokenNode('return'))
@@ -511,7 +548,7 @@ class AstGraphGenerator(NodeVisitor):
             self.visit(node.type)
             if node.name:
                 self.__visit_variable_like(node.name, node.lineno, node.col_offset,
-                                           can_annotate_here=False)
+                    can_annotate_here=False)
         self.__visit_statement_block(node.body)
 
     def visit_While(self, node: While):
@@ -546,13 +583,16 @@ class AstGraphGenerator(NodeVisitor):
         if node.optional_vars is not None:
             self.add_terminal(TokenNode('as'))
             self.visit(node.optional_vars)
+
     # endregion
 
     # region ClassDef
     def visit_ClassDef(self, node):
         # Add class inheritance (if any)
         self.__type_graph.add_class(node.name,
-                                    [self.__type_graph.canonicalize_annotation(parse_type_annotation_node(parent), self.__imported_symbols) for parent in node.bases])
+            [self.__type_graph.canonicalize_annotation(parse_type_annotation_node(parent), self.__imported_symbols)
+             for
+             parent in node.bases])
         if len(node.bases) == 0:
             self.__type_graph.add_class(node.name, [parse_type_annotation_node('object')])
 
@@ -581,7 +621,9 @@ class AstGraphGenerator(NodeVisitor):
 
     def visit_Assign(self, node: Assign):
         if hasattr(node, "value") and hasattr(
-                node.value, "func") and hasattr(node.value.func, "id") and node.value.func.id == "NewType" and hasattr(node, "value") and hasattr(node.value, "args") and len(node.value.args) == 2:
+                node.value, "func") and hasattr(node.value.func,
+            "id") and node.value.func.id == "NewType" and hasattr(
+            node, "value") and hasattr(node.value, "args") and len(node.value.args) == 2:
             self.__type_graph.add_type_alias(
                 parse_type_annotation_node(node.value.args[0]), parse_type_annotation_node(node.value.args[1]))
 
@@ -599,7 +641,8 @@ class AstGraphGenerator(NodeVisitor):
         for i, target in enumerate(node.targets):
             if isinstance(target, Attribute) or isinstance(target, Name):
                 self.__visit_variable_like(target, target.lineno, target.col_offset, can_annotate_here=True,
-                                           type_annotation=parse_type_comment(node.type_comment) if node.type_comment is not None else None)
+                    type_annotation=parse_type_comment(
+                        node.type_comment) if node.type_comment is not None else None)
             else:
                 self.visit(target)
             if i > 0:
@@ -624,7 +667,7 @@ class AstGraphGenerator(NodeVisitor):
 
     def visit_AnnAssign(self, node: AnnAssign):
         self.__visit_variable_like(node.target, node.target.lineno, node.target.col_offset,
-                                   can_annotate_here=True, type_annotation=parse_type_annotation_node(node.annotation))
+            can_annotate_here=True, type_annotation=parse_type_annotation_node(node.annotation))
 
         if node.value is not None:
             self.add_terminal(TokenNode('='))
@@ -662,7 +705,6 @@ class AstGraphGenerator(NodeVisitor):
 
     # endregion
 
-
     def visit_Call(self, node: Call):
         self.visit(node.func)
         self.add_terminal(TokenNode('('))
@@ -698,7 +740,8 @@ class AstGraphGenerator(NodeVisitor):
         elif node.type_comment is not None:
             type_annotation = parse_type_comment(node.type_comment)
 
-        self.__visit_variable_like(node.arg, node.lineno, node.col_offset, can_annotate_here=True, type_annotation=type_annotation)
+        self.__visit_variable_like(node.arg, node.lineno, node.col_offset, can_annotate_here=True,
+            type_annotation=type_annotation)
 
     def visit_arguments(self, node: arguments):
         defaults = [None] * (len(node.args) - len(node.defaults)) + node.defaults
@@ -743,7 +786,7 @@ class AstGraphGenerator(NodeVisitor):
             self.add_terminal(TokenNode('='))
         self.visit(node.value)
 
-    #region Comprehensions
+    # region Comprehensions
     def visit_comprehension(self, node: comprehension):
         if node.is_async:
             self.add_terminal(TokenNode('async'))
@@ -830,7 +873,7 @@ class AstGraphGenerator(NodeVisitor):
         finally:
             self.__scope_symtable.pop()
 
-    #endregion
+    # endregion
 
     # region Simple Expressions
     def visit_alias(self, node: alias):
@@ -860,7 +903,7 @@ class AstGraphGenerator(NodeVisitor):
     def visit_BoolOp(self, node):
         for idx, value in enumerate(node.values):
             self.visit(value)
-            if idx < len(node.values) -1:
+            if idx < len(node.values) - 1:
                 self.add_terminal(TokenNode(self.BOOLOP_SYMBOLS[type(node.op)]))
 
     def visit_Compare(self, node: Compare):
@@ -882,7 +925,7 @@ class AstGraphGenerator(NodeVisitor):
     def visit_ExtSlice(self, node: ExtSlice):
         for i, value in enumerate(node.dims):
             self.visit(value)
-            if i < len(node.dims) -1:
+            if i < len(node.dims) - 1:
                 self.add_terminal(TokenNode(','))
 
     def visit_Expr(self, node):
@@ -970,8 +1013,8 @@ class AstGraphGenerator(NodeVisitor):
             self.visit(element)
             self.add_terminal(TokenNode(','))  # Always add , this is always correct and useful for len one tuples.
         self.add_terminal(TokenNode(close_brace))
-    # endregion
 
+    # endregion
 
     # region literals and constructor-likes
     def visit_Bytes(self, node):
@@ -1007,9 +1050,14 @@ class AstGraphGenerator(NodeVisitor):
         elif node is None:
             return 'None'
         else:
-            raise Exception('Unrecognized node type %s' % type(node) )
+            raise Exception('Unrecognized node type %s' % type(node))
 
-    def to_dot(self, filename: str, initial_comment: str='', draw_only_edge_types: Optional[Set[EdgeType]]=None) -> None:
+    def node_to_target(self, node: Any) -> str:
+        if isinstance(node, Symbol):
+            return getattr(node, "target", None)
+
+    def to_dot(self, filename: str, initial_comment: str = '',
+               draw_only_edge_types: Optional[Set[EdgeType]] = None) -> None:
         nodes_to_be_drawn = set()
 
         for edge_type, edges in self.__edges.items():
@@ -1045,12 +1093,13 @@ class AstGraphGenerator(NodeVisitor):
 
     # endregion
 
+
 def test_on_self():
     from glob import iglob
     import os
     lattice = TypeLatticeGenerator('../../metadata/typingRules.json')
     for fname in iglob('./testfiles/**/*.py', recursive=True):
-    # for fname in iglob('/mnt/c/Users/t-mialla/Source/Repos/**/*.py', recursive=True):
+        # for fname in iglob('/mnt/c/Users/t-mialla/Source/Repos/**/*.py', recursive=True):
         if os.path.isdir(fname): continue
         print(fname)
 
@@ -1058,10 +1107,12 @@ def test_on_self():
             try:
                 b = AstGraphGenerator(f.read(), lattice)
                 b.build()
-                b.to_dot('test.dot')#, draw_only_edge_types={EdgeType.NEXT_USE, EdgeType.OCCURRENCE_OF})
-                import pdb; pdb.set_trace()
+                b.to_dot('test.dot')  # , draw_only_edge_types={EdgeType.NEXT_USE, EdgeType.OCCURRENCE_OF})
+                import pdb;
+                pdb.set_trace()
             except SyntaxError:
                 pass
+
 
 if __name__ == '__main__':
     run_and_debug(test_on_self, True)

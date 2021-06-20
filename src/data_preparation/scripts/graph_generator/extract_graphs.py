@@ -10,15 +10,15 @@ Options:
     --debug                Debugging mode.
 """
 import bdb
-from typing import Tuple, List, Optional, Set, Iterator
-from dpu_utils.utils import save_jsonl_gz, run_and_debug, ChunkWriter
-import traceback
-import os
 import json
+import os
+import time
+import traceback
 from glob import iglob
+from typing import Tuple, List, Optional, Set, Iterator
 
 from docopt import docopt
-import time
+from dpu_utils.utils import save_jsonl_gz, run_and_debug, ChunkWriter
 
 from .graphgenerator import AstGraphGenerator
 from .type_lattice_generator import TypeLatticeGenerator
@@ -46,13 +46,14 @@ class Monitoring:
         self.current_repo = repo_name
 
 
-def build_graph(source_code, monitoring: Monitoring, type_lattice: TypeLatticeGenerator) -> Tuple[Optional[List], Optional[List]]:
+def build_graph(source_code, monitoring: Monitoring, type_lattice: TypeLatticeGenerator, flake8_json: list) -> Tuple[
+    Optional[List], Optional[List]]:
     """
     Parses the code of a file into a custom abstract syntax tree.
     """
     try:
         visitor = AstGraphGenerator(source_code, type_lattice)
-        return visitor.build()
+        return visitor.build(flake8_json)
     except FaultyAnnotation as e:
         print("Faulty Annotation: ", e)
         print("at file: ", monitoring.file)
@@ -63,14 +64,14 @@ def build_graph(source_code, monitoring: Monitoring, type_lattice: TypeLatticeGe
         monitoring.found_error(e, traceback.format_exc())
 
 
-
-def explore_files(root_dir: str, duplicates_to_remove: Set[str], monitoring: Monitoring, type_lattice: TypeLatticeGenerator) -> Iterator[Tuple]:
+def explore_files(root_dir: str, duplicates_to_remove: Set[str], monitoring: Monitoring,
+                  type_lattice: TypeLatticeGenerator, flake8_root_dir: str) -> Iterator[Tuple]:
     """
     Walks through the root_dir and process each file.
     """
     for file_path in iglob(os.path.join(root_dir, '**', '*.py'), recursive=True):
         if file_path in duplicates_to_remove:
-            print('Ignoring duplicate %s' % file_path)
+            print(f"Ignoring duplicate {file_path}.")
             continue
         print(file_path)
         if not os.path.isfile(file_path):
@@ -82,20 +83,28 @@ def explore_files(root_dir: str, duplicates_to_remove: Set[str], monitoring: Mon
             if monitoring.current_repo != repo:
                 monitoring.enter_repo(repo)
                 type_lattice.build_graph()
-            graph = build_graph(f.read(), monitoring, type_lattice)
-            if graph is None or len(graph['supernodes']) == 0:
+
+            flake8_report_path = os.path.join(flake8_root_dir, file_path.replace(root_dir, '')[:-2] + ".json")
+            if not os.path.isfile(file_path):
+                flake8_report = []
+            else:
+                with open(flake8_report_path, "r") as file:
+                    flake8_report = json.load(file)
+
+            graph = build_graph(f.read(), monitoring, type_lattice, flake8_report)
+            if graph is None or len(graph["supernodes"]) == 0:
                 continue
-            graph['filename'] = file_path[len(root_dir):]
+            graph["filename"] = file_path[len(root_dir):]
             yield graph
 
 
 def main(arguments):
+    monitoring = Monitoring()
+    type_lattice = TypeLatticeGenerator(arguments['TYPING_RULES'])
     try:
         start_time = time.clock()
         print("Exploring folders ...")
         walk_dir = arguments['SOURCE_FOLDER']
-        monitoring = Monitoring()
-        type_lattice = TypeLatticeGenerator(arguments['TYPING_RULES'])
 
         with open(arguments['DUPLICATES_JSON'], errors='ignore') as f:
             duplicates = json.load(f)
@@ -105,12 +114,11 @@ def main(arguments):
                 all_to_remove.update(duplicate_cluster[1:])
 
         # Extract graphs
-        outputs = explore_files(walk_dir, all_to_remove,
-                                monitoring, type_lattice)
+        outputs = explore_files(walk_dir, all_to_remove, monitoring, type_lattice)
 
         # Save results
         with ChunkWriter(out_folder=arguments['SAVE_FOLDER'], file_prefix='all-graphs',
-                         max_chunk_size=5000, file_suffix='.jsonl.gz') as writer:
+                max_chunk_size=5000, file_suffix='.jsonl.gz') as writer:
             for graph in outputs:
                 writer.add(graph)
     except bdb.BdbQuit:
@@ -122,23 +130,19 @@ def main(arguments):
 
     print("Building and saving the type graph...")
     type_lattice.build_graph()
-    save_jsonl_gz([type_lattice.return_json()], os.path.join(
-        arguments['SAVE_FOLDER'], "_type_lattice.json.gz"))
+    save_jsonl_gz([type_lattice.return_json()], os.path.join(arguments['SAVE_FOLDER'], "_type_lattice.json.gz"))
 
     print("Done.")
-    print("Generated %d graphs out of %d snippets" %
-            (monitoring.count - len(monitoring.errors), monitoring.count))
+    print(f"Generated {monitoring.count - len(monitoring.errors)} graphs out of {monitoring.count} snippets")
 
     with open(os.path.join(arguments['SAVE_FOLDER'], 'logs_graph_generator.txt'), 'w') as f:
         for item in monitoring.errors:
             try:
-                f.write("%s\n" % item)
+                f.write(f"{item}\n")
             except:
                 pass
 
     print("\nExecution in: ", time.clock() - start_time, " seconds")
-
-
 
 
 if __name__ == '__main__':
