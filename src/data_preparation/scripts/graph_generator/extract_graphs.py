@@ -84,8 +84,8 @@ def explore_files(root_dir: str, duplicates_to_remove: Set[str], monitoring: Mon
                 monitoring.enter_repo(repo)
                 type_lattice.build_graph()
 
-            flake8_report_path = os.path.join(flake8_root_dir, file_path.replace(root_dir, '')[:-2] + ".json")
-            if not os.path.isfile(file_path):
+            flake8_report_path = os.path.join(root_dir, file_path.replace(root_dir, flake8_root_dir)[:-2] + "json")
+            if not os.path.exists(flake8_report_path):
                 flake8_report = []
             else:
                 with open(flake8_report_path, "r") as file:
@@ -114,7 +114,7 @@ def main(arguments):
                 all_to_remove.update(duplicate_cluster[1:])
 
         # Extract graphs
-        outputs = explore_files(walk_dir, all_to_remove, monitoring, type_lattice)
+        outputs = explore_files(walk_dir, all_to_remove, monitoring, type_lattice, arguments["FLAKE8_DIR"])
 
         # Save results
         with ChunkWriter(out_folder=arguments['SAVE_FOLDER'], file_prefix='all-graphs',

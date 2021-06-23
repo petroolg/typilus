@@ -108,9 +108,8 @@ class AstGraphGenerator(NodeVisitor):
         "F823": re.compile("local variable '(.*)' .* referenced before assignment"),
         "F841": re.compile("local variable '(.*)' is assigned to but never used"),
         "F821": re.compile("undefined name '(.*)'"),
-        "F811": re.compile("redefinition of unused '(.*)' from line"),
         "F812": re.compile("list comprehension redefines '(.*)' from line"),
-        "F822": re.compile("undefined name '(.*)' in __all__")
+        "E741": re.compile("ambiguous variable name '(.*)'")
     }
 
     BUILT_IN_METHODS_TO_KEEP = frozenset({"__getitem__", "__setitem__", "__enter__", "__call__"})
@@ -164,13 +163,18 @@ class AstGraphGenerator(NodeVisitor):
             var_name = self.parse_variable_name(code_dict["code"], code_dict["text"])
             graph_symbol = None
             for key, info in self.__variable_like_symbols.items():
-                if info.name == var_name and info.symbol_type == "variable":
+                if info.name == var_name:
+                    print(info.symbol_type)
+                if (info.name == var_name
+                        and info.symbol_type == "variable"
+                        and (code_dict["line_number"], code_dict["column_number"] - 1) in info.locations
+                ):
                     graph_symbol = key
             if graph_symbol:
-                print(self.__node_to_id[graph_symbol])
-                print(self.__id_to_node[self.__node_to_id[graph_symbol]])
+                # print(self.__node_to_id[graph_symbol])
+                # print(self.__id_to_node[self.__node_to_id[graph_symbol]])
                 self.__id_to_node[self.__node_to_id[graph_symbol]].target = code_dict["code"]
-                print(self.__id_to_node[self.__node_to_id[graph_symbol]].target)
+                # print(self.__id_to_node[self.__node_to_id[graph_symbol]].target)
 
         return {
             'nodes': [self.node_to_label(n) for n in self.__id_to_node],
@@ -180,7 +184,8 @@ class AstGraphGenerator(NodeVisitor):
             'supernodes': {self.__node_to_id[node]: parse_symbol_info(symbol_info)
                            for node, symbol_info in self.__variable_like_symbols.items()
                            if len(symbol_info.annotatable_locations) > 0 and is_annotation_worthy(symbol_info)},
-            "labels": [self.node_to_target(n) for n in self.__id_to_node]
+            "labels": [self.node_to_target(n) for n in self.__id_to_node],
+            "variable_mask": [isinstance(n, Symbol) for n in self.__id_to_node]
         }
 
     def __add_subtoken_of_edges(self):
