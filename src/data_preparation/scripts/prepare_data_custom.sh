@@ -20,5 +20,3 @@ readonly SRC_BASE="/usr/src/datasetbuilder/scripts/"
 export PYTHONPATH="$SRC_BASE"
 mkdir -p graph-dataset
 python3 /usr/src/datasetbuilder/job.py ./bug/ ./corpus_duplicates.json ./graph-dataset $SRC_BASE/../metadata/typingRules.json ./flake8/
-mkdir -p graph-dataset-split
-python3 /usr/src/datasetbuilder/scripts/utils/split.py -data-dir ./graph-dataset -out-dir ./graph-dataset-split
